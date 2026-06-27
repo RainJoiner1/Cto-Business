@@ -79,11 +79,28 @@ async function main() {
       }
       await prisma.usageMetric.createMany({ data: metricsData });
 
+      // Create 2-3 Reservation Portfolios
       for (let k = 0; k < 2; k++) {
+        const family = instanceFamilies[k % instanceFamilies.length]!;
+        const metadata = {
+          'm5.large': { vCPU: 2, ramGB: 8 },
+          'm5.xlarge': { vCPU: 4, ramGB: 16 },
+          'c5.xlarge': { vCPU: 4, ramGB: 8 },
+          'r5.2xlarge': { vCPU: 8, ramGB: 64 },
+          'Standard_D2s_v3': { vCPU: 2, ramGB: 8 },
+          'Standard_F4s': { vCPU: 4, ramGB: 8 },
+          'n1-standard-1': { vCPU: 1, ramGB: 3.75 },
+          'e2-medium': { vCPU: 2, ramGB: 4 },
+        }[family] || { vCPU: 2, ramGB: 4 };
+
+        const normalizedUnits = Math.round(metadata.vCPU * 1.0 + metadata.ramGB * 0.25);
+
         await prisma.reservationPortfolio.create({
           data: {
             accountId: account.id,
             reservationId: `res-${crypto.randomUUID().substring(0, 12)}`,
+            instanceFamily: family,
+            normalizedUnits,
             termYears: k % 2 === 0 ? 'ONE_YEAR' : 'THREE_YEAR',
             offeringClass: 'STANDARD',
             hourlyRate: 0.02 + (Math.random() * 0.03),

@@ -76,16 +76,18 @@ model UsageMetric {
 }
 
 model ReservationPortfolio {
-  id             String         @id @default(uuid())
-  accountId      String
-  reservationId  String         @unique
-  termYears      CommitmentTerm
-  offeringClass  OfferingClass
-  hourlyRate     Float
-  totalUpfront   Float
-  state          String         @default("ACTIVE")
-  expirationDate DateTime
-  cloudAccount   CloudAccount   @relation(fields: [accountId], references: [id])
+  id              String         @id @default(uuid())
+  accountId       String
+  reservationId   String         @unique
+  instanceFamily  String
+  normalizedUnits Int
+  termYears       CommitmentTerm
+  offeringClass   OfferingClass
+  hourlyRate      Float
+  totalUpfront    Float
+  state           String         @default("ACTIVE")
+  expirationDate  DateTime
+  cloudAccount    CloudAccount   @relation(fields: [accountId], references: [id])
 
   @@index([accountId, state])
 }
