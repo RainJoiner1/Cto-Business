@@ -1,4 +1,5 @@
 import { PrismaClient, CloudProvider, CommitmentTerm, OfferingClass, PlanStatus, SyncStatus } from '@prisma/client';
+import crypto from 'node:crypto';
 
 const prisma = new PrismaClient();
 
@@ -20,14 +21,15 @@ async function main() {
   ];
 
   const providers: CloudProvider[] = ['AWS', 'AZURE', 'GCP'];
+  const regions = ['us-east-1', 'us-west-2', 'eu-central-1', 'ap-southeast-1'];
 
   for (let i = 0; i < orgNames.length; i++) {
-    const name = orgNames[i];
+    const name = orgNames[i]!;
     const org = await prisma.organization.create({
       data: {
-        name: name!,
-        billingAccountId: `billing-${i}`,
-        riskTolerance: 0.2 + (Math.random() * 0.3),
+        name,
+        billingAccountId: `billing-${i}-${crypto.randomUUID().substring(0, 8)}`,
+        riskTolerance: 0.1 + (Math.random() * 0.4),
       }
     });
 
@@ -36,76 +38,96 @@ async function main() {
     // Create 1-2 Cloud Accounts per Org
     const numAccounts = 1 + Math.floor(Math.random() * 2);
     for (let j = 0; j < numAccounts; j++) {
-      const provider = providers[(i + j) % providers.length] as CloudProvider;
+      const provider = providers[(i + j) % providers.length]!;
       const account = await prisma.cloudAccount.create({
         data: {
           orgId: org.id,
           provider,
           accountAlias: `${name}-${provider}-${j}`,
-          credentials: { apiKey: 'mock-key', secret: 'mock-secret' },
+          credentials: { apiKey: crypto.randomUUID(), secret: crypto.randomUUID() },
         }
       });
 
       // Create Usage Metrics for the last 90 days
       const metricsData = [];
-      const instanceFamilies = provider === 'AWS' ? ['m5.large', 't3.medium'] : (provider === 'AZURE' ? ['Standard_D2s_v3', 'Standard_B2s'] : ['n1-standard-1', 'f1-micro']);
+      const instanceFamilies = provider === 'AWS' ? ['m5.large', 'c5.xlarge', 'r5.2xlarge'] : 
+                              (provider === 'AZURE' ? ['Standard_D2s_v3', 'Standard_F4s'] : ['n1-standard-1', 'e2-medium']);
       
+      const region = regions[Math.floor(Math.random() * regions.length)]!;
+
       for (let d = 0; d < 90; d++) {
         const timestamp = new Date();
         timestamp.setDate(timestamp.getDate() - d);
+        timestamp.setHours(0, 0, 0, 0);
+
+        const seasonality = 1.0 + 0.3 * Math.sin((2 * Math.PI * d) / 7);
         
         for (const family of instanceFamilies) {
+          const baseUnits = 100 + Math.floor(Math.random() * 200);
+          const units = Math.floor(baseUnits * seasonality);
+          const costPerUnit = 0.05 + (Math.random() * 0.05);
+
           metricsData.push({
             accountId: account.id,
             timestamp: new Date(timestamp),
             instanceFamily: family,
-            region: 'us-east-1',
-            normalizedUnits: Math.floor(100 + Math.random() * 500),
-            onDemandCost: 50.0 + (Math.random() * 100),
+            region,
+            normalizedUnits: units,
+            onDemandCost: units * costPerUnit,
           });
         }
       }
       await prisma.usageMetric.createMany({ data: metricsData });
 
-      // Create 2-3 Reservation Portfolios
       for (let k = 0; k < 2; k++) {
         await prisma.reservationPortfolio.create({
           data: {
             accountId: account.id,
-            reservationId: `res-${account.id}-${k}`,
-            termYears: 'ONE_YEAR',
+            reservationId: `res-${crypto.randomUUID().substring(0, 12)}`,
+            termYears: k % 2 === 0 ? 'ONE_YEAR' : 'THREE_YEAR',
             offeringClass: 'STANDARD',
-            hourlyRate: 0.05,
-            totalUpfront: 1000.0,
+            hourlyRate: 0.02 + (Math.random() * 0.03),
+            totalUpfront: 500.0 + (Math.random() * 1000),
             state: 'ACTIVE',
-            expirationDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30 * 6), // 6 months from now
+            expirationDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * (30 + Math.random() * 300)),
           }
         });
       }
     }
 
-    // Create 1 Execution Plan
     const plan = await prisma.executionPlan.create({
       data: {
         organizationId: org.id,
-        totalEstimatedSavings: 500.0,
-        status: 'DRAFT',
+        totalEstimatedSavings: 1000.0 + (Math.random() * 5000),
+        status: i % 3 === 0 ? 'COMPLETED' : (i % 3 === 1 ? 'APPROVED' : 'DRAFT'),
       }
     });
 
-    // Create 2 Recommendations
-    await prisma.recommendation.create({
-      data: {
-        executionPlanId: plan.id,
-        instanceFamily: 'm5.large',
-        region: 'us-east-1',
-        recommendedQuantity: 5,
-        term: 'ONE_YEAR',
-        roiScore: 0.85,
-        estimatedMonthlySavings: 200.0,
-        status: 'DRAFT',
-      }
-    });
+    for (let r = 0; r < 2; r++) {
+      await prisma.recommendation.create({
+        data: {
+          executionPlanId: plan.id,
+          instanceFamily: i % 2 === 0 ? 'm5.large' : 'c5.xlarge',
+          region: regions[r % regions.length]!,
+          recommendedQuantity: 5 + Math.floor(Math.random() * 10),
+          term: r % 2 === 0 ? 'ONE_YEAR' : 'THREE_YEAR',
+          roiScore: 0.7 + (Math.random() * 0.25),
+          estimatedMonthlySavings: 100.0 + (Math.random() * 400),
+          status: plan.status,
+        }
+      });
+    }
+
+    if (plan.status === 'COMPLETED') {
+      await prisma.transactionLog.create({
+        data: {
+          idempotencyKey: crypto.randomUUID(),
+          executionPlanId: plan.id,
+          vendorResponse: { orderId: crypto.randomUUID(), status: 'confirmed' },
+          status: 'SUCCESS',
+        }
+      });
+    }
   }
 
   console.log('Seeding completed!');

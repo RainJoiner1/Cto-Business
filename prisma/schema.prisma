@@ -76,31 +76,31 @@ model UsageMetric {
 }
 
 model ReservationPortfolio {
-  id            String         @id @default(uuid())
-  accountId     String
-  reservationId String         @unique
-  termYears     CommitmentTerm
-  offeringClass OfferingClass
-  hourlyRate    Float
-  totalUpfront  Float
-  state         String         @default("ACTIVE")
+  id             String         @id @default(uuid())
+  accountId      String
+  reservationId  String         @unique
+  termYears      CommitmentTerm
+  offeringClass  OfferingClass
+  hourlyRate     Float
+  totalUpfront   Float
+  state          String         @default("ACTIVE")
   expirationDate DateTime
-  cloudAccount  CloudAccount   @relation(fields: [accountId], references: [id])
+  cloudAccount   CloudAccount   @relation(fields: [accountId], references: [id])
 
   @@index([accountId, state])
 }
 
 model Recommendation {
-  id                     String         @id @default(uuid())
-  executionPlanId        String
-  instanceFamily         String
-  region                 String
-  recommendedQuantity    Int
-  term                   CommitmentTerm
-  roiScore               Float
+  id                      String         @id @default(uuid())
+  executionPlanId         String
+  instanceFamily          String
+  region                  String
+  recommendedQuantity     Int
+  term                    CommitmentTerm
+  roiScore                Float
   estimatedMonthlySavings Float
-  status                 PlanStatus     @default(DRAFT)
-  executionPlan          ExecutionPlan  @relation(fields: [executionPlanId], references: [id])
+  status                  PlanStatus     @default(DRAFT)
+  executionPlan           ExecutionPlan  @relation(fields: [executionPlanId], references: [id])
 }
 
 model ExecutionPlan {
@@ -112,13 +112,15 @@ model ExecutionPlan {
   approvedById          String?
   organization          Organization     @relation(fields: [organizationId], references: [id])
   recommendations       Recommendation[]
+  transactionLogs       TransactionLog[]
 }
 
 model TransactionLog {
-  id              String     @id @default(uuid())
-  idempotencyKey  String     @unique
+  id              String        @id @default(uuid())
+  idempotencyKey  String        @unique
   executionPlanId String
   vendorResponse  Json
   status          SyncStatus
-  retryCount      Int        @default(0)
+  retryCount      Int           @default(0)
+  executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id])
 }
