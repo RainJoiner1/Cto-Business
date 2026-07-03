@@ -13,83 +13,116 @@ enum CloudProvider {
   GCP
 }
 
+enum CommitmentTerm {
+  ONE_YEAR
+  THREE_YEAR
+}
+
+enum OfferingClass {
+  STANDARD
+  CONVERTIBLE
+}
+
 enum PlanStatus {
   DRAFT
   APPROVED
-  EXECUTED
+  PROCESSING
+  COMPLETED
   FAILED
 }
 
-enum LogStatus {
+enum SyncStatus {
   PENDING
+  SYNCING
   SUCCESS
   ERROR
 }
 
 model Organization {
+  id               String          @id @default(uuid())
+  name             String
+  billingAccountId String          @unique
+  riskTolerance    Float           @default(0.2)
+  createdAt        DateTime        @default(now())
+  cloudAccounts    CloudAccount[]
+  executionPlans   ExecutionPlan[]
+}
+
+model CloudAccount {
   id                    String                 @id @default(uuid())
-  name                  String
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
+  orgId                 String
+  provider              CloudProvider
+  accountAlias          String
+  credentials           Json
+  lastSync              DateTime               @default(now())
+  organization          Organization           @relation(fields: [orgId], references: [id])
   usageMetrics          UsageMetric[]
   reservationPortfolios ReservationPortfolio[]
-  executionPlans        ExecutionPlan[]
-  transactionLogs       TransactionLog[]
-}
-
-model UsageMetric {
-  id             String        @id @default(uuid())
-  org            Organization  @relation(fields: [orgId], references: [id])
-  orgId          String
-  provider       CloudProvider
-  computeUnit    Float         // Normalized unit of compute
-  cost           Float
-  usage          Float         // Raw usage value
-  timestamp      DateTime
-  createdAt      DateTime      @default(now())
-
-  @@index([orgId, timestamp])
-}
-
-model ReservationPortfolio {
-  id                         String        @id @default(uuid())
-  org                        Organization  @relation(fields: [orgId], references: [id])
-  orgId                      String
-  provider                   CloudProvider
-  instanceType               String
-  region                     String
-  count                      Int
-  normalizedUnitsPerInstance Float
-  expiryDate                 DateTime
-  createdAt                  DateTime      @default(now())
 
   @@index([orgId, provider])
 }
 
-model ExecutionPlan {
-  id              String        @id @default(uuid())
-  org             Organization  @relation(fields: [orgId], references: [id])
-  orgId           String
-  planType        String        // e.g., "SAVINGS_RESERVED_INSTANCES"
-  recommendations Json          // Detailed recommendations
-  roiScore        Float
-  status          PlanStatus    @default(DRAFT)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+model UsageMetric {
+  id              String       @id @default(uuid())
+  accountId       String
+  timestamp       DateTime
+  instanceFamily  String
+  region          String
+  normalizedUnits Int
+  onDemandCost    Float
+  cloudAccount    CloudAccount @relation(fields: [accountId], references: [id])
 
-  @@index([orgId, status])
+  @@index([accountId, timestamp, instanceFamily])
+}
+
+model ReservationPortfolio {
+  id              String         @id @default(uuid())
+  accountId       String
+  reservationId   String         @unique
+  instanceFamily  String
+  normalizedUnits Int
+  termYears       CommitmentTerm
+  offeringClass   OfferingClass
+  hourlyRate      Float
+  totalUpfront    Float
+  state           String         @default("ACTIVE")
+  expirationDate  DateTime
+  cloudAccount    CloudAccount   @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, state])
+}
+
+model Recommendation {
+  id                      String         @id @default(uuid())
+  executionPlanId         String
+  instanceFamily          String
+  region                  String
+  recommendedQuantity     Int
+  term                    CommitmentTerm
+  roiScore                Float
+  estimatedMonthlySavings Float
+  status                  PlanStatus     @default(DRAFT)
+  executionPlan           ExecutionPlan  @relation(fields: [executionPlanId], references: [id])
+}
+
+model ExecutionPlan {
+  id                    String           @id @default(uuid())
+  organizationId        String
+  generatedAt           DateTime         @default(now())
+  totalEstimatedSavings Float
+  status                PlanStatus
+  approvedById          String?
+  organization          Organization     @relation(fields: [organizationId], references: [id])
+  recommendations       Recommendation[]
+  transactionLogs       TransactionLog[]
 }
 
 model TransactionLog {
-  id               String        @id @default(uuid())
-  org              Organization  @relation(fields: [orgId], references: [id])
-  orgId            String
-  idempotencyKey   String        @unique
-  status           LogStatus     @default(PENDING)
-  payload          Json
-  hash             String        // Crypto hash for integrity
-  error            String?
-  createdAt        DateTime      @default(now())
-
-  @@index([orgId, idempotencyKey])
+  id              String        @id @default(uuid())
+  idempotencyKey  String        @unique
+  executionPlanId String
+  vendorResponse  Json
+  status          SyncStatus
+  retryCount      Int           @default(0)
+  executionPlan   ExecutionPlan @relation(fields: [executionPlanId], references: [id])
 }

@@ -1,15 +1,18 @@
-import { PrismaClient, CloudProvider, PlanStatus, LogStatus } from '@prisma/client';
+import { PrismaClient, CloudProvider, CommitmentTerm, OfferingClass, PlanStatus, SyncStatus } from '@prisma/client';
+import crypto from 'node:crypto';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Starting seeding...');
 
-  // Clear existing data
+  // Clear existing data in reverse order of dependencies
   await prisma.transactionLog.deleteMany();
+  await prisma.recommendation.deleteMany();
   await prisma.executionPlan.deleteMany();
   await prisma.reservationPortfolio.deleteMany();
   await prisma.usageMetric.deleteMany();
+  await prisma.cloudAccount.deleteMany();
   await prisma.organization.deleteMany();
 
   const orgNames = [
@@ -18,71 +21,133 @@ async function main() {
   ];
 
   const providers: CloudProvider[] = ['AWS', 'AZURE', 'GCP'];
+  const regions = ['us-east-1', 'us-west-2', 'eu-central-1', 'ap-southeast-1'];
 
-  for (const name of orgNames) {
+  for (let i = 0; i < orgNames.length; i++) {
+    const name = orgNames[i]!;
     const org = await prisma.organization.create({
-      data: { name }
+      data: {
+        name,
+        billingAccountId: `billing-${i}-${crypto.randomUUID().substring(0, 8)}`,
+        riskTolerance: 0.1 + (Math.random() * 0.4),
+      }
     });
 
     console.log(`Created organization: ${org.name}`);
 
-    // Create Usage Metrics for the last 90 days
-    const metricsData = [];
-    const now = new Date();
-    for (let i = 0; i < 90; i++) {
-      const timestamp = new Date(now);
-      timestamp.setDate(now.getDate() - i);
-      
-      for (const provider of providers) {
-        // Generate some synthetic usage data
-        // Base usage + some seasonality + some noise
-        const baseUsage = provider === 'AWS' ? 100 : (provider === 'AZURE' ? 70 : 50);
-        const seasonality = Math.sin((i / 7) * 2 * Math.PI) * 20; // 7-day seasonality
-        const noise = (Math.random() - 0.5) * 10;
-        const usageValue = Math.max(10, baseUsage + seasonality + noise);
-        
-        metricsData.push({
+    // Create 1-2 Cloud Accounts per Org
+    const numAccounts = 1 + Math.floor(Math.random() * 2);
+    for (let j = 0; j < numAccounts; j++) {
+      const provider = providers[(i + j) % providers.length]!;
+      const account = await prisma.cloudAccount.create({
+        data: {
           orgId: org.id,
           provider,
-          computeUnit: usageValue,
-          cost: usageValue * 0.1,
-          usage: usageValue * 1.5,
-          timestamp
+          accountAlias: `${name}-${provider}-${j}`,
+          credentials: { apiKey: crypto.randomUUID(), secret: crypto.randomUUID() },
+        }
+      });
+
+      // Create Usage Metrics for the last 90 days
+      const metricsData = [];
+      const instanceFamilies = provider === 'AWS' ? ['m5.large', 'c5.xlarge', 'r5.2xlarge'] : 
+                              (provider === 'AZURE' ? ['Standard_D2s_v3', 'Standard_F4s'] : ['n1-standard-1', 'e2-medium']);
+      
+      const region = regions[Math.floor(Math.random() * regions.length)]!;
+
+      for (let d = 0; d < 90; d++) {
+        const timestamp = new Date();
+        timestamp.setDate(timestamp.getDate() - d);
+        timestamp.setHours(0, 0, 0, 0);
+
+        const seasonality = 1.0 + 0.3 * Math.sin((2 * Math.PI * d) / 7);
+        
+        for (const family of instanceFamilies) {
+          const baseUnits = 100 + Math.floor(Math.random() * 200);
+          const units = Math.floor(baseUnits * seasonality);
+          const costPerUnit = 0.05 + (Math.random() * 0.05);
+
+          metricsData.push({
+            accountId: account.id,
+            timestamp: new Date(timestamp),
+            instanceFamily: family,
+            region,
+            normalizedUnits: units,
+            onDemandCost: units * costPerUnit,
+          });
+        }
+      }
+      await prisma.usageMetric.createMany({ data: metricsData });
+
+      // Create 2-3 Reservation Portfolios
+      for (let k = 0; k < 2; k++) {
+        const family = instanceFamilies[k % instanceFamilies.length]!;
+        const metadata = {
+          'm5.large': { vCPU: 2, ramGB: 8 },
+          'm5.xlarge': { vCPU: 4, ramGB: 16 },
+          'c5.xlarge': { vCPU: 4, ramGB: 8 },
+          'r5.2xlarge': { vCPU: 8, ramGB: 64 },
+          'Standard_D2s_v3': { vCPU: 2, ramGB: 8 },
+          'Standard_F4s': { vCPU: 4, ramGB: 8 },
+          'n1-standard-1': { vCPU: 1, ramGB: 3.75 },
+          'e2-medium': { vCPU: 2, ramGB: 4 },
+        }[family] || { vCPU: 2, ramGB: 4 };
+
+        const normalizedUnits = Math.round(metadata.vCPU * 1.0 + metadata.ramGB * 0.25);
+
+        await prisma.reservationPortfolio.create({
+          data: {
+            accountId: account.id,
+            reservationId: `res-${crypto.randomUUID().substring(0, 12)}`,
+            instanceFamily: family,
+            normalizedUnits,
+            termYears: k % 2 === 0 ? 'ONE_YEAR' : 'THREE_YEAR',
+            offeringClass: 'STANDARD',
+            hourlyRate: 0.02 + (Math.random() * 0.03),
+            totalUpfront: 500.0 + (Math.random() * 1000),
+            state: 'ACTIVE',
+            expirationDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * (30 + Math.random() * 300)),
+          }
         });
       }
     }
 
-    await prisma.usageMetric.createMany({
-      data: metricsData
-    });
-
-    // Create some Reservation Portfolios
-    await prisma.reservationPortfolio.create({
+    const plan = await prisma.executionPlan.create({
       data: {
-        orgId: org.id,
-        provider: 'AWS',
-        instanceType: 't3.medium',
-        region: 'us-east-1',
-        count: 5,
-        normalizedUnitsPerInstance: 2.0,
-        expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+        organizationId: org.id,
+        totalEstimatedSavings: 1000.0 + (Math.random() * 5000),
+        status: i % 3 === 0 ? 'COMPLETED' : (i % 3 === 1 ? 'APPROVED' : 'DRAFT'),
       }
     });
 
-    await prisma.reservationPortfolio.create({
-      data: {
-        orgId: org.id,
-        provider: 'AZURE',
-        instanceType: 'Standard_D2s_v3',
-        region: 'eastus',
-        count: 3,
-        normalizedUnitsPerInstance: 2.0,
-        expiryDate: new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000) // 60 days from now
-      }
-    });
+    for (let r = 0; r < 2; r++) {
+      await prisma.recommendation.create({
+        data: {
+          executionPlanId: plan.id,
+          instanceFamily: i % 2 === 0 ? 'm5.large' : 'c5.xlarge',
+          region: regions[r % regions.length]!,
+          recommendedQuantity: 5 + Math.floor(Math.random() * 10),
+          term: r % 2 === 0 ? 'ONE_YEAR' : 'THREE_YEAR',
+          roiScore: 0.7 + (Math.random() * 0.25),
+          estimatedMonthlySavings: 100.0 + (Math.random() * 400),
+          status: plan.status,
+        }
+      });
+    }
+
+    if (plan.status === 'COMPLETED') {
+      await prisma.transactionLog.create({
+        data: {
+          idempotencyKey: crypto.randomUUID(),
+          executionPlanId: plan.id,
+          vendorResponse: { orderId: crypto.randomUUID(), status: 'confirmed' },
+          status: 'SUCCESS',
+        }
+      });
+    }
   }
 
-  console.log('Seeding finished.');
+  console.log('Seeding completed!');
 }
 
 main()
